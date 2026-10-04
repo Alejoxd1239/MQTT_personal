@@ -101,12 +101,11 @@ python tools/simulate_device.py --topic nackademin-iot/alex/node-1
 - Store history in a time-series database (InfluxDB) and visualise it in Grafana.
 
 ## What I learned
-
-<!-- Write this section in your own words. Recruiters read it. Some prompts:
-- What was harder than you expected? (e.g. reconnect logic, debouncing, JSON buffer sizes)
-- What would you do differently in a real product?
-- What did you learn about MQTT (QoS, retained messages, Last Will)?
--->
+Hello!
+This was only a personal project that I had private. Just to have something to show when I share my GitHub.
+If you know me and you see this project and have some doubts about or something that I can do better just tell me, I want to learn more.
+When I did this project took me 2 weeks for complete it. It was really difficult when I was beginning with MQTT's but the with some logic was more understandable.
+Thanks for see it. :)
 
 ## License
 
