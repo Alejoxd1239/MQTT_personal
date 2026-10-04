@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32 telemetry node</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #E6ECEE;
+    --surface: #F6F8F9;
+    --ink: #13232E;
+    --muted: #5B6B75;
+    --line: #CBD5DA;
+    --mask: #0E6E5C;        /* solder-mask green: connected, primary actions */
+    --amber: #F5A300;       /* the LED */
+    --alert: #B42318;       /* offline / errors */
+    --font: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-num: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0F1A20;
+      --surface: #16242C;
+      --ink: #E3ECEF;
+      --muted: #8FA2AC;
+      --line: #2A3B44;
+      --mask: #3FBFA0;
+      --amber: #FFC23D;
+      --alert: #F97066;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.5 var(--font);
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 20px 48px; }
+  button, select, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--mask); outline-offset: 2px; }
+
+  header {
+    display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+    gap: 8px 16px; margin-bottom: 20px;
+  }
+  h1 { font-size: 1.5rem; font-weight: 600; margin: 0; }
+  .topic { color: var(--muted); font-size: .95rem; word-break: break-all; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--surface); font-size: .9rem; font-weight: 500;
+  }
+  .pill::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+  }
+  .pill[data-state="online"]::before { background: var(--mask); }
+  .pill[data-state="offline"]::before { background: var(--alert); }
+
+  .grid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+
+  section { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+  h2 { font-size: 1rem; font-weight: 600; margin: 0 0 12px; }
+
+  /* The LED: the one loud thing on the page */
+  .led-panel { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; }
+  .led {
+    width: 148px; height: 148px; border-radius: 50%; border: 0; cursor: pointer;
+    background: radial-gradient(circle at 38% 32%, color-mix(in srgb, var(--surface) 70%, var(--muted)) 0%, color-mix(in srgb, var(--line) 80%, var(--muted)) 70%);
+    box-shadow: inset 0 -6px 14px rgba(0,0,0,.18);
+    transition: background .25s, box-shadow .25s;
+  }
+  .led[aria-pressed="true"] {
+    background: radial-gradient(circle at 38% 32%, #FFF3C4 0%, var(--amber) 55%, color-mix(in srgb, var(--amber) 70%, #7A4A00) 100%);
+    box-shadow: 0 0 36px 6px color-mix(in srgb, var(--amber) 55%, transparent), inset 0 -6px 14px rgba(0,0,0,.15);
+  }
+  .led:disabled { cursor: not-allowed; opacity: .55; }
+  .led-state { font-family: var(--font-num); font-size: 1.6rem; font-weight: 600; margin: 0; }
+  .hint { color: var(--muted); font-size: .9rem; margin: 0; max-width: 28ch; }
+
+  /* Readings */
+  .readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 4px 20px; margin: 0; }
+  .reading { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .reading dt { color: var(--muted); font-size: .9rem; }
+  .reading dd { margin: 0; font-family: var(--font-num); font-size: 2rem; font-weight: 600; line-height: 1.15; }
+  .reading dd small { font-size: 1rem; font-weight: 500; color: var(--muted); margin-left: 4px; }
+  .reading .note { font-family: var(--font); font-size: .85rem; color: var(--muted); }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
+  select, input {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
+  }
+
+  .chart-wrap { margin-top: 16px; }
+  svg.chart { width: 100%; height: auto; display: block; }
+  .chart .gridline { stroke: var(--line); stroke-width: 1; }
+  .chart .axis-label { fill: var(--muted); font: 12px var(--font); }
+  .chart .trace { fill: none; stroke: var(--mask); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .empty { fill: var(--muted); font: 14px var(--font); }
+
+  .log { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; font-size: .92rem; }
+  .log li { display: grid; grid-template-columns: 74px 1fr; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .log time { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .log .err { color: var(--alert); }
+
+  details { margin-top: 16px; }
+  summary { cursor: pointer; font-weight: 500; }
+  .settings { display: grid; gap: 10px; margin-top: 12px; }
+  .settings label { display: grid; gap: 4px; font-size: .9rem; color: var(--muted); }
+  .settings input { width: 100%; color: var(--ink); }
+  .btn {
+    border: 0; border-radius: 8px; padding: 8px 16px; font-weight: 600; cursor: pointer;
+    background: var(--mask); color: var(--surface);
+  }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .stack { display: grid; gap: 16px; margin-top: 16px; }
+
+  @media (prefers-reduced-motion: reduce) { .led { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>ESP32 telemetry node</h1>
+      <div class="topic" id="topicLabel"></div>
+    </div>
+    <span class="pill" id="statusPill" data-state="unknown" role="status" aria-live="polite">Connecting to broker</span>
+  </header>
+
+  <div class="grid">
+    <section class="led-panel" aria-labelledby="ledHeading">
+      <h2 id="ledHeading">Onboard LED</h2>
+      <button class="led" id="ledBtn" aria-pressed="false" aria-label="Toggle the LED" disabled></button>
+      <p class="led-state" id="ledState">—</p>
+      <p class="hint">Click to toggle it remotely, or press the button on the board.</p>
+    </section>
+
+    <section aria-labelledby="readingsHeading">
+      <h2 id="readingsHeading">Live readings</h2>
+      <dl class="readings">
+        <div class="reading"><dt>Wi-Fi signal</dt><dd id="rssi">—</dd><div class="note" id="rssiNote">&nbsp;</div></div>
+        <div class="reading"><dt>Uptime</dt><dd id="uptime">—</dd><div class="note" id="lastSeen">&nbsp;</div></div>
+        <div class="reading"><dt>Free memory</dt><dd id="heap">—</dd><div class="note">heap</div></div>
+        <div class="reading"><dt>Touch sensor</dt><dd id="touch">—</dd><div class="note">changes when you touch the pin</div></div>
+        <div class="reading"><dt>Button presses</dt><dd id="buttons">—</dd><div class="note">since boot</div></div>
+        <div class="reading"><dt>MQTT connections</dt><dd id="reconnects">—</dd><div class="note">since boot</div></div>
+      </dl>
+      <div class="controls">
+        <label for="interval">Send data every</label>
+        <select id="interval" disabled>
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+          <option value="5" selected>5 s</option>
+          <option value="10">10 s</option>
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+        </select>
+      </div>
+    </section>
+  </div>
+
+  <div class="stack">
+    <section aria-labelledby="chartHeading">
+      <h2 id="chartHeading">Wi-Fi signal over time</h2>
+      <div class="chart-wrap">
+        <svg class="chart" id="chart" viewBox="0 0 600 180" role="img" aria-label="Wi-Fi signal strength history"></svg>
+      </div>
+    </section>
+
+    <section aria-labelledby="logHeading">
+      <h2 id="logHeading">Activity</h2>
+      <ul class="log" id="log"></ul>
+      <details>
+        <summary>Connection settings</summary>
+        <form class="settings" id="settingsForm">
+          <label>Broker (WebSocket URL)
+            <input id="brokerInput" required>
+          </label>
+          <label>Device topic (TOPIC_PREFIX/DEVICE_NAME)
+            <input id="topicInput" required>
+          </label>
+          <div><button class="btn" type="submit">Reconnect</button></div>
+        </form>
+      </details>
+    </section>
+  </div>
+</main>
+
+<script>
+(() => {
+  const DEFAULTS = {
+    broker: "wss://broker.hivemq.com:8884/mqtt",
+    topic: "nackademin-iot/change-me/node-1",
+  };
+  const MAX_POINTS = 60;
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    pill: $("statusPill"), topicLabel: $("topicLabel"),
+    ledBtn: $("ledBtn"), ledState: $("ledState"),
+    rssi: $("rssi"), rssiNote: $("rssiNote"), uptime: $("uptime"), lastSeen: $("lastSeen"),
+    heap: $("heap"), touch: $("touch"), buttons: $("buttons"), reconnects: $("reconnects"),
+    interval: $("interval"), chart: $("chart"), log: $("log"),
+    form: $("settingsForm"), brokerInput: $("brokerInput"), topicInput: $("topicInput"),
+  };
+
+  // ---- Settings: URL params > saved > defaults ----
+  function readSaved() {
+    try { return JSON.parse(localStorage.getItem("esp32-telemetry-settings") || "{}"); }
+    catch { return {}; }
+  }
+  function save(settings) {
+    try { localStorage.setItem("esp32-telemetry-settings", JSON.stringify(settings)); } catch {}
+  }
+  const params = new URLSearchParams(location.search);
+  const saved = readSaved();
+  let settings = {
+    broker: params.get("broker") || saved.broker || DEFAULTS.broker,
+    topic: params.get("topic") || saved.topic || DEFAULTS.topic,
+  };
+
+  // ---- State ----
+  let client = null;
+  let brokerUp = false;
+  let deviceOnline = null;   // null = unknown
+  let lastTelemetryAt = 0;
+  let intervalS = 5;
+  let rssiHistory = [];
+
+  // ---- UI helpers ----
+  function log(text, isError = false) {
+    const li = document.createElement("li");
+    const t = document.createElement("time");
+    t.textContent = new Date().toLocaleTimeString([], { hour12: false });
+    const span = document.createElement("span");
+    span.textContent = text;
+    if (isError) span.className = "err";
+    li.append(t, span);
+    els.log.prepend(li);
+    while (els.log.children.length > 50) els.log.lastChild.remove();
+  }
+
+  function setPill(state, text) {
+    els.pill.dataset.state = state;
+    els.pill.textContent = text;
+  }
+
+  function refreshStatus() {
+    const canCommand = brokerUp && deviceOnline !== false;
+    els.ledBtn.disabled = !canCommand;
+    els.interval.disabled = !canCommand;
+
+    if (!brokerUp) return setPill("offline", "Broker unreachable");
+    if (deviceOnline === false) return setPill("offline", "Device offline");
+    if (!lastTelemetryAt) return setPill("unknown", "Waiting for device");
+
+    const age = (Date.now() - lastTelemetryAt) / 1000;
+    if (age > intervalS * 3 + 2) {
+      setPill("offline", `No data for ${Math.round(age)} s`);
+    } else {
+      setPill("online", "Device online");
+    }
+    els.lastSeen.textContent = `updated ${Math.round(age)} s ago`;
+  }
+
+  function formatUptime(s) {
+    const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600),
+          m = Math.floor(s % 3600 / 60), sec = s % 60;
+    if (d) return `${d}d ${h}h`;
+    if (h) return `${h}h ${m}m`;
+    if (m) return `${m}m ${sec}s`;
+    return `${sec}s`;
+  }
+
+  function rssiQuality(dbm) {
+    if (dbm >= -55) return "excellent";
+    if (dbm >= -67) return "good";
+    if (dbm >= -75) return "fair";
+    return "weak";
+  }
+
+  function withUnit(el, value, unit) {
+    el.textContent = value;
+    if (unit) {
+      const small = document.createElement("small");
+      small.textContent = unit;
+      el.append(small);
+    }
+  }
+
+  function setLedUi(on) {
+    els.ledBtn.setAttribute("aria-pressed", String(on));
+    els.ledState.textContent = on ? "On" : "Off";
+  }
+
+  // ---- Chart ----
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const W = 600, H = 180, PAD_L = 44, PAD_R = 8, PAD_T = 10, PAD_B = 10;
+  const MIN_DBM = -100, MAX_DBM = -30;
+  const y = (dbm) => PAD_T + (MAX_DBM - Math.max(MIN_DBM, Math.min(MAX_DBM, dbm))) / (MAX_DBM - MIN_DBM) * (H - PAD_T - PAD_B);
+
+  function svgEl(tag, attrs, text) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    if (text) el.textContent = text;
+    return el;
+  }
+
+  function drawChart() {
+    els.chart.replaceChildren();
+    for (const dbm of [-40, -60, -80, -100]) {
+      els.chart.append(svgEl("line", { class: "gridline", x1: PAD_L, x2: W - PAD_R, y1: y(dbm), y2: y(dbm) }));
+      els.chart.append(svgEl("text", { class: "axis-label", x: 0, y: y(dbm) + 4 }, `${dbm} dBm`));
+    }
+    if (rssiHistory.length < 2) {
+      els.chart.append(svgEl("text", { class: "empty", x: PAD_L + 12, y: H / 2 }, "The signal trace appears after two readings."));
+      return;
+    }
+    const step = (W - PAD_L - PAD_R) / (MAX_POINTS - 1);
+    const offset = MAX_POINTS - rssiHistory.length;
+    const points = rssiHistory.map((v, i) => `${(PAD_L + (offset + i) * step).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    els.chart.append(svgEl("polyline", { class: "trace", points }));
+  }
+
+  // ---- Message handling ----
+  function handleTelemetry(data) {
+    lastTelemetryAt = Date.now();
+    deviceOnline = true;
+
+    if (typeof data.rssi_dbm === "number") {
+      withUnit(els.rssi, data.rssi_dbm, "dBm");
+      els.rssiNote.textContent = rssiQuality(data.rssi_dbm);
+      rssiHistory.push(data.rssi_dbm);
+      if (rssiHistory.length > MAX_POINTS) rssiHistory.shift();
+      drawChart();
+    }
+    if (typeof data.uptime_s === "number") els.uptime.textContent = formatUptime(data.uptime_s);
+    if (typeof data.free_heap === "number") withUnit(els.heap, Math.round(data.free_heap / 1024), "KB");
+    els.touch.textContent = typeof data.touch === "number" ? data.touch : "n/a";
+    if (typeof data.button_count === "number") els.buttons.textContent = data.button_count;
+    if (typeof data.reconnects === "number") els.reconnects.textContent = data.reconnects;
+    if (typeof data.led === "boolean") setLedUi(data.led);
+    if (typeof data.interval_s === "number" && data.interval_s > 0) {
+      intervalS = data.interval_s;
+      const match = [...els.interval.options].some(o => Number(o.value) === intervalS);
+      if (match) els.interval.value = String(intervalS);
+    }
+    refreshStatus();
+  }
+
+  function onMessage(topic, payload) {
+    const base = settings.topic;
+    const text = payload.toString();
+
+    if (topic === `${base}/telemetry`) {
+      try { handleTelemetry(JSON.parse(text)); }
+      catch { log("Received telemetry that is not valid JSON", true); }
+    } else if (topic === `${base}/status`) {
+      deviceOnline = text === "online";
+      log(deviceOnline ? "Device came online" : "Device went offline", !deviceOnline);
+      refreshStatus();
+    } else if (topic === `${base}/event`) {
+      try {
+        const ev = JSON.parse(text);
+        if (ev.type === "button") log(`Button pressed on the board (#${ev.count}), LED ${ev.led ? "on" : "off"}`);
+      } catch { /* ignore malformed events */ }
+    }
+  }
+
+  // ---- MQTT connection ----
+  function connect() {
+    if (client) { client.end(true); client = null; }
+    brokerUp = false; deviceOnline = null; lastTelemetryAt = 0; rssiHistory = [];
+    drawChart();
+    els.topicLabel.textContent = settings.topic;
+    els.brokerInput.value = settings.broker;
+    els.topicInput.value = settings.topic;
+    setPill("unknown", "Connecting to broker");
+
+    client = mqtt.connect(settings.broker, {
+      clientId: "dashboard-" + Math.random().toString(16).slice(2, 10),
+      clean: true,
+      connectTimeout: 8000,
+      reconnectPeriod: 4000,
+    });
+
+    client.on("connect", () => {
+      brokerUp = true;
+      log(`Connected to broker, listening on ${settings.topic}/#`);
+      client.subscribe(`${settings.topic}/#`, { qos: 0 });
+      refreshStatus();
+    });
+    client.on("message", onMessage);
+    client.on("close", () => { if (brokerUp) log("Lost connection to broker", true); brokerUp = false; refreshStatus(); });
+    client.on("error", (err) => log(`Broker error: ${err.message}`, true));
+  }
+
+  function send(subtopic, payload) {
+    if (!client || !brokerUp) return;
+    client.publish(`${settings.topic}/cmd/${subtopic}`, payload, { qos: 1 });
+  }
+
+  // ---- Events ----
+  els.ledBtn.addEventListener("click", () => { send("led", "toggle"); log("Sent: toggle LED"); });
+  els.interval.addEventListener("change", () => {
+    send("interval", els.interval.value);
+    log(`Sent: send data every ${els.interval.value} s`);
+  });
+  els.form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    settings = { broker: els.brokerInput.value.trim(), topic: els.topicInput.value.trim().replace(/\/+$/, "") };
+    save(settings);
+    connect();
+  });
+
+  setInterval(() => { if (lastTelemetryAt) refreshStatus(); }, 1000);
+
+  if (typeof mqtt === "undefined") {
+    setPill("offline", "MQTT library failed to load");
+    log("Could not load mqtt.js from unpkg. Check your internet connection.", true);
+    return;
+  }
+  if (settings.topic === DEFAULTS.topic) {
+    log("Using the example topic. Open Connection settings and enter your own TOPIC_PREFIX/DEVICE_NAME.");
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

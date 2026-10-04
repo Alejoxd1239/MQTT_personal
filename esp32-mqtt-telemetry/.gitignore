@@ -1,0 +1,13 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# Local secrets - never commit
+include/config.h
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
