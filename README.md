@@ -107,6 +107,4 @@ If you know me and you see this project and have some doubts about or something 
 When I did this project took me 2 weeks for complete it. It was really difficult when I was beginning with MQTT's but the with some logic was more understandable.
 Thanks for see it. :)
 
-## License
 
-MIT, see [LICENSE](LICENSE).
