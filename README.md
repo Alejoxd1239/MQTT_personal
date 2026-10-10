@@ -1,8 +1,9 @@
 # ESP32 MQTT telemetry node
 
 An ESP32 that streams live telemetry over MQTT and can be controlled remotely from a web dashboard. Built with PlatformIO (Arduino framework), PubSubClient and ArduinoJson. No sensors needed: it uses the board's built-in Wi-Fi radio, capacitive touch and LED, plus a jumper wire as a button. Runs on the Arduino Nano ESP32 (ESP32-S3) and the classic ESP32 DevKit.
+The connection is encrypted with TLS, every client signs in with its own user, and the broker decides who may read and who may control.
 
-![Dashboard showing live readings, the LED turned on and the Wi-Fi signal trace](docs/dashboard.png)
+![Dashboard showing live readings, the LED turned on and the Wi-Fi signal trace](esp32-mqtt-telemetry/docs/dashboard.png)
 
 ## What it does
 
@@ -12,6 +13,30 @@ An ESP32 that streams live telemetry over MQTT and can be controlled remotely fr
 - Pressing the button (a wire from D2 to GND on the Nano, the BOOT button on a DevKit) toggles the LED locally and publishes an event, and the dashboard stays in sync.
 - Recovers on its own: Wi-Fi and MQTT reconnect in the background with exponential backoff, without blocking the main loop.
 
+## Security
+
+The first version used a public test broker: no password, no encryption, and anyone who guessed the topic could read the data or switch the LED. This version fixes that in three layers.
+
+**1. Encryption (TLS).** The device connects on port 8883 and the dashboard over secure WebSockets (`wss://`, port 8084), so nothing travels in plain text. The ESP32 also verifies the broker's certificate against the DigiCert root CA in `root_ca.h`, so a fake broker cannot impersonate the real one. Before connecting it syncs its clock over NTP, because certificate dates cannot be checked while the board thinks it is 1970.
+
+**2. Authentication.** The broker (EMQX Serverless) does not allow anonymous clients. Each client has its own user:
+
+| User | Used by | Can read data | Can send commands |
+|---|---|---|---|
+| `device` | the ESP32 | yes | (receives them) |
+| `admin` | me, in the dashboard | yes | yes |
+| `view` | anyone I want to show it to | yes | **no** |
+
+If the board were lost, only the `device` user would need to be revoked.
+
+**3. Authorization.** A broker rule denies publishing for `view`. The dashboard also greys out the controls for that user, but that is only for convenience: the broker is what enforces the rule.
+
+Other details:
+
+- The dashboard never saves the password. It only keeps it in memory while the page is open.
+- On a wrong password, both the device and the dashboard stop retrying instead of hammering the broker.
+- Secrets stay out of git: `config.h` (Wi-Fi and MQTT passwords) is in `.gitignore`.
+
 ## Architecture
 
 ```mermaid
@@ -20,9 +45,9 @@ flowchart LR
         S[Touch, button, Wi-Fi RSSI, heap] --> F[Firmware loop]
         F --> L[Onboard LED]
     end
-    F -- "MQTT / TCP 1883<br/>telemetry, status, event" --> B[(MQTT broker)]
+    F -- "MQTT over TLS, port 8883<br/>user: device" --> B[(EMQX Serverless<br/>private broker)]    
     B -- "cmd/led, cmd/interval" --> F
-    B <-- "MQTT over WebSockets<br/>(wss 8884)" --> D[Web dashboard]
+    B <-- "Secure WebSockets, wss 8084<br/>user: admin or view" --> D[Web dashboard]
 ```
 
 ### Topics
@@ -61,13 +86,13 @@ Example telemetry message:
    cd esp32-mqtt-telemetry
    cp include/config.example.h include/config.h
    ```
-2. Edit `include/config.h`: set your Wi-Fi name and password, and change `TOPIC_PREFIX` to something unique (the public broker is shared with everyone).
+2. 2. Edit `include/config.h`: set your Wi-Fi, your EMQX address (`MQTT_HOST`), the `device` user's password and a `TOPIC_PREFIX`. You need a free [EMQX Serverless](https://www.emqx.com/en/cloud/serverless-mqtt) deployment with three users: `device`, `admin` and `view`.
 3. Build, flash and open the serial monitor:
    ```bash
    pio run -t upload            # add -e esp32dev for a DevKit
    pio device monitor
    ```
-4. Open `dashboard/index.html` in a browser, open **Connection settings** and enter your `TOPIC_PREFIX/DEVICE_NAME`. You can also pass it in the URL: `index.html?topic=nackademin-iot/alex/node-1`.
+4. Open `dashboard/index.html` in a browser, open **Connection settings** and enter your `TOPIC_PREFIX/DEVICE_NAME`. You can also pass it in the URL: `index.html?topic=nackademin-iot/alex/node-1`. Sign in with `admin` to control the device, or `view` to only watch.
 
 Using a different board? Add an environment to `platformio.ini` and set the pins in `config.h`. On chips without capacitive touch, the touch reading is skipped automatically at compile time.
 
@@ -94,7 +119,8 @@ python tools/simulate_device.py --topic nackademin-iot/alex/node-1
 
 ## Limitations and next steps
 
-- The public broker has no authentication or encryption, so anyone who knows the topic can read and send commands. Fine for a demo; not for real data. The next step is TLS with certificates and a private broker.
+- Switch the broker to whitelist mode ("deny by default"), so each user can only reach its own topics.
+- The device password is compiled into the firmware; per-device client certificates would be safer.
 - Add a real sensor (for example a BME280 for temperature, humidity and pressure).
 - Over-the-air (OTA) firmware updates.
 - Deep sleep for battery-powered operation.
