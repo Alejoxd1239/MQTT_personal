@@ -1,20 +1,23 @@
-// Copy this file to include/config.h and fill in your own values.
-// config.h is listed in .gitignore so your Wi-Fi password never ends up on GitHub.
+
 #pragma once
 
 // ---- Wi-Fi (2.4 GHz only) ----
-#define WIFI_SSID     "WIFI-DUMMY"
-#define WIFI_PASSWORD "CHANGE-password"
+#define WIFI_SSID     "CHANGE-ME"
+#define WIFI_PASSWORD "CHANGE-ME"
 
 // ---- MQTT broker ----
 // Public test broker: fine for demos, NOT for real data (no auth, no TLS).
-#define MQTT_HOST "broker.hivemq.com"
-#define MQTT_PORT 1883
+// ---- MQTT broker (private, with TLS and login) ----
+#define MQTT_HOST     "CHANGE-ME-central-1.emqxsl.com"
+#define MQTT_PORT     8883
+#define MQTT_USE_TLS  true
+#define MQTT_USER     "device"
+#define MQTT_PASSWORD "CHANGE-ME"
 
 // All topics live under TOPIC_PREFIX/DEVICE_NAME.
 // Make the prefix unique so you don't collide with other people on the public broker.
-#define TOPIC_PREFIX "nackademin-iot/change-me" 
-#define DEVICE_NAME  "node-1"
+#define TOPIC_PREFIX "nackademin-iot/CHANGE-ME" 
+#define DEVICE_NAME  "CHANGE-ME"
 
 // ---- Behaviour ----
 #define DEFAULT_PUBLISH_INTERVAL_MS 5000

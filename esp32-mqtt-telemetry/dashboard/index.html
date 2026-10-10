@@ -184,6 +184,12 @@
           <label>Device topic (TOPIC_PREFIX/DEVICE_NAME)
             <input id="topicInput" required>
           </label>
+          <label>Username
+            <input id="userInput" autocomplete="username">
+          </label>
+          <label>Password
+            <input id="passInput" type="password" autocomplete="current-password">
+          </label>
           <div><button class="btn" type="submit">Reconnect</button></div>
         </form>
       </details>
@@ -194,7 +200,7 @@
 <script>
 (() => {
   const DEFAULTS = {
-    broker: "wss://broker.hivemq.com:8884/mqtt",
+    broker: "wss://yffc9966.ala.eu-central-1.emqxsl.com:8084/mqtt",
     topic: "nackademin-iot/change-me/node-1",
   };
   const MAX_POINTS = 60;
@@ -207,6 +213,7 @@
     heap: $("heap"), touch: $("touch"), buttons: $("buttons"), reconnects: $("reconnects"),
     interval: $("interval"), chart: $("chart"), log: $("log"),
     form: $("settingsForm"), brokerInput: $("brokerInput"), topicInput: $("topicInput"),
+    userInput: $("userInput"), passInput: $("passInput"),
   };
 
   // ---- Settings: URL params > saved > defaults ----
@@ -222,8 +229,11 @@
   let settings = {
     broker: params.get("broker") || saved.broker || DEFAULTS.broker,
     topic: params.get("topic") || saved.topic || DEFAULTS.topic,
+    username: saved.username || "",
   };
 
+  let password="";
+  let authFailed = false;
   // ---- State ----
   let client = null;
   let brokerUp = false;
@@ -251,10 +261,12 @@
   }
 
   function refreshStatus() {
-    const canCommand = brokerUp && deviceOnline !== false;
+    const readOnly = settings.username.toLowerCase() === "view";
+    const canCommand = brokerUp && deviceOnline !== false && !readOnly;
     els.ledBtn.disabled = !canCommand;
     els.interval.disabled = !canCommand;
 
+    if (authFailed) return setPill("offline", "Sign-in refused");
     if (!brokerUp) return setPill("offline", "Broker unreachable");
     if (deviceOnline === false) return setPill("offline", "Device offline");
     if (!lastTelemetryAt) return setPill("unknown", "Waiting for device");
@@ -376,15 +388,19 @@
   function connect() {
     if (client) { client.end(true); client = null; }
     brokerUp = false; deviceOnline = null; lastTelemetryAt = 0; rssiHistory = [];
+    authFailed = false;
     drawChart();
     els.topicLabel.textContent = settings.topic;
     els.brokerInput.value = settings.broker;
     els.topicInput.value = settings.topic;
+    els.userInput.value = settings.username;
     setPill("unknown", "Connecting to broker");
 
     client = mqtt.connect(settings.broker, {
       clientId: "dashboard-" + Math.random().toString(16).slice(2, 10),
-      clean: true,
+      username: settings.username,
+      password: password,
+      clean: true,  
       connectTimeout: 8000,
       reconnectPeriod: 4000,
     });
@@ -397,7 +413,16 @@
     });
     client.on("message", onMessage);
     client.on("close", () => { if (brokerUp) log("Lost connection to broker", true); brokerUp = false; refreshStatus(); });
-    client.on("error", (err) => log(`Broker error: ${err.message}`, true));
+    client.on("error", (err) => {
+      if ([4, 5, 134, 135].includes(err.code)) {
+        authFailed = true;
+        log("Sign-in refused: check your username and password.", true);
+        client.end(true); 
+        refreshStatus();
+        return;
+      }
+      log(`Broker error: ${err.message  }`, true);
+    });
   }
 
   function send(subtopic, payload) {
@@ -413,7 +438,13 @@
   });
   els.form.addEventListener("submit", (e) => {
     e.preventDefault();
-    settings = { broker: els.brokerInput.value.trim(), topic: els.topicInput.value.trim().replace(/\/+$/, "") };
+      settings = {
+      broker: els.brokerInput.value.trim(),
+      topic: els.topicInput.value.trim().replace(/\/+$/, ""),
+      username: els.userInput.value.trim(),
+    };
+    password = els.passInput.value;
+    els.passInput.value = ""; 
     save(settings);
     connect();
   });
@@ -429,6 +460,8 @@
     log("Using the example topic. Open Connection settings and enter your own TOPIC_PREFIX/DEVICE_NAME.");
   }
   connect();
+  els.form.closest("details").open = true;
+  log("Sign in: enter your username and password in Connection settings.");
 })();
 </script>
 </body>

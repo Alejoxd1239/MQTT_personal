@@ -16,6 +16,8 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <time.h> 
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include "soc/soc_caps.h"
@@ -25,6 +27,7 @@
 #else
 #error "Missing include/config.h - copy include/config.example.h to include/config.h and fill in your values."
 #endif
+#include "root_ca.h"
 
 #if ENABLE_TOUCH && defined(SOC_TOUCH_SENSOR_NUM) && (SOC_TOUCH_SENSOR_NUM > 0)
 #define TOUCH_AVAILABLE 1
@@ -40,9 +43,8 @@ static const uint32_t BUTTON_DEBOUNCE_MS   = 50;
 static const uint32_t MIN_INTERVAL_MS      = 1000;
 static const uint32_t MAX_INTERVAL_MS      = 3600000;
 
-// ---------- State ----------
-WiFiClient wifiClient;
-PubSubClient mqtt(wifiClient);
+WiFiClientSecure netClient;   // TLS: encrypted + broker certificate verified
+PubSubClient mqtt(netClient);
 
 String topicBase, topicStatus, topicTelemetry, topicEvent, topicCmdLed, topicCmdInterval;
 String clientId;
@@ -53,6 +55,7 @@ uint32_t lastWifiAttemptMs = 0;
 uint32_t lastMqttAttemptMs = 0;
 uint32_t mqttRetryDelayMs  = MQTT_RETRY_MIN_MS;
 uint32_t mqttReconnects    = 0;
+bool     ntpStarted        = false;
 
 bool     ledOn             = false;
 uint32_t buttonPresses     = 0;
@@ -141,17 +144,32 @@ void maintainWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
+bool clockReady() {
+  if (!ntpStarted) {
+    configTime(0, 0, "pool.ntp.org", "time.google.com");
+    ntpStarted = true;
+    Serial.println("[time] syncing clock over NTP...");
+  }
+  return time(nullptr) > 1704067200;  // later than 2024-01-01 = clock is set
+}
+
 void maintainMqtt() {
   if (WiFi.status() != WL_CONNECTED) return;
   if (mqtt.connected()) { mqtt.loop(); return; }
+  if (!clockReady()) return; 
 
   uint32_t now = millis();
   if (now - lastMqttAttemptMs < mqttRetryDelayMs && lastMqttAttemptMs != 0) return;
   lastMqttAttemptMs = now;
 
   Serial.printf("[mqtt] connecting to %s:%d as %s...\n", MQTT_HOST, MQTT_PORT, clientId.c_str());
-  // Last Will: if we drop off without saying goodbye, the broker publishes "offline" for us.
-  bool ok = mqtt.connect(clientId.c_str(), topicStatus.c_str(), 1, true, "offline");
+  char tlsError[128];
+  if (netClient.lastError(tlsError, sizeof(tlsError)) != 0) {
+    Serial.printf("[tls] %s\n", tlsError);
+  }
+  
+  bool ok = mqtt.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD,
+  topicStatus.c_str(), 1, true, "offline");
 
   if (ok) {
     Serial.println("[mqtt] connected");
@@ -221,6 +239,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
 
+  netClient.setCACert(ROOT_CA_PEM);  
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setCallback(onMqttMessage);
   mqtt.setBufferSize(512);
